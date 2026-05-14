@@ -1,485 +1,303 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { ALL_EVENTS, EPOCHS, PERIODS, PERIOD_DESCRIPTIONS, STATIC_CONTENT, UA, cc } from "./data/timelineData.js";
-import { buildPrompt, epochAt, fmt, L, makeCoord, zoomLvl } from "./utils/time.js";
-import { drawAll } from "./canvas/drawTimeline.js";
-import { css } from "./styles.js";
-import { Topbar } from "./components/Topbar.jsx";
-import { Legend } from "./components/Legend.jsx";
-import { ZoomControls } from "./components/ZoomControls.jsx";
-import { TimelineTooltip } from "./components/TimelineTooltip.jsx";
-import { BookmarksPanel } from "./components/BookmarksPanel.jsx";
-import { EventPanel } from "./components/EventPanel.jsx";
-import { StatusBar } from "./components/StatusBar.jsx";
-import { ExploreCards } from "./components/ExploreCards.jsx";
+const SURFACE = "#fbfaf7";
+const PANEL = "#ffffff";
+const INK = "#171412";
+const MUTED = "rgba(23,20,18,.58)";
+const LINE = "rgba(23,20,18,.10)";
+const GOLD = "#b9822f";
 
-export default function Chronos() {
-  const canvasRef=useRef(null),miniRef=useRef(null),wrapRef=useRef(null);
-  const S=useRef({vs:UA*1.04,ve:20,aiEvents:[],selectedId:null,hoveredId:null,fetchedZones:new Set(),fetching:false,fetchQueue:[],panelCache:{},placed:[],lineY:0});
-  const rafRef=useRef(null),fetchDebRef=useRef(null),animRef=useRef(null);
+export const css = {
+  app:{
+    minHeight:"100vh",
+    background:"#efede7",
+    color:INK,
+    fontFamily:"'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+    overflow:"hidden"
+  },
+  shell:{
+    display:"grid",
+    gridTemplateColumns:"320px minmax(0, 1fr)",
+    height:"100vh",
+    gap:0
+  },
+  sidebar:{
+    position:"relative",
+    zIndex:60,
+    display:"flex",
+    flexDirection:"column",
+    gap:18,
+    padding:"22px 18px",
+    background:SURFACE,
+    borderRight:`1px solid ${LINE}`,
+    boxShadow:"8px 0 28px rgba(23,20,18,.05)",
+    overflowY:"auto"
+  },
+  sidebarMobile:{
+    border:`1px solid ${LINE}`,
+    borderRadius:8,
+    boxShadow:"0 14px 40px rgba(23,20,18,.16)"
+  },
+  sidebarHeader:{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12},
+  brandBlock:{minWidth:0},
+  brand:{fontFamily:"Georgia,serif",fontSize:30,fontWeight:700,color:INK,lineHeight:1},
+  brandSub:{fontFamily:"'DM Mono',monospace",fontSize:11,color:GOLD,letterSpacing:".08em",marginLeft:6},
+  brandLine:{fontSize:11,lineHeight:1.5,color:MUTED,marginTop:8,maxWidth:230},
+  compactButton:{
+    height:30,
+    padding:"0 10px",
+    borderRadius:7,
+    border:`1px solid ${LINE}`,
+    background:"#f2efe8",
+    color:INK,
+    cursor:"pointer",
+    fontFamily:"inherit",
+    fontSize:11
+  },
+  sidebarSection:{display:"flex",flexDirection:"column",gap:9},
+  sectionTitle:{
+    fontSize:10,
+    letterSpacing:".14em",
+    textTransform:"uppercase",
+    color:"rgba(23,20,18,.42)",
+    fontWeight:600
+  },
+  epochGrid:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7},
+  epochButton:(ep)=>({
+    display:"flex",
+    alignItems:"center",
+    gap:7,
+    minHeight:34,
+    padding:"7px 9px",
+    borderRadius:7,
+    border:`1px solid ${ep.stripe}33`,
+    background:ep.pillBg,
+    color:ep.pillText,
+    cursor:"pointer",
+    fontFamily:"inherit",
+    fontSize:11,
+    textAlign:"left"
+  }),
+  epochDot:(color)=>({width:7,height:7,borderRadius:"50%",background:color,flexShrink:0}),
+  periodGrid:{display:"flex",flexWrap:"wrap",gap:6},
+  periodPill:(per)=>({
+    flexShrink:0,
+    padding:"5px 8px",
+    borderRadius:7,
+    fontSize:10.5,
+    letterSpacing:0,
+    fontWeight:600,
+    cursor:"pointer",
+    border:`1px solid ${per.color}88`,
+    background:per.color+"26",
+    color:"#26211c",
+    whiteSpace:"nowrap",
+    fontFamily:"inherit"
+  }),
+  sidebarFooter:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:"auto",paddingTop:8},
+  sidebarAction:{
+    height:36,
+    borderRadius:7,
+    border:`1px solid ${LINE}`,
+    background:PANEL,
+    color:INK,
+    cursor:"pointer",
+    fontFamily:"inherit",
+    fontSize:12,
+    boxShadow:"0 1px 0 rgba(23,20,18,.04)"
+  },
 
-  // ── STORAGE: load saved content + bookmarks on mount ──
-  useEffect(()=>{
-    (async()=>{
-      try{
-        // Load cached rich content
-        const cached=JSON.parse(localStorage.getItem("chronos-cache") || "null");
-        if(cached && typeof cached === "object") Object.assign(S.current.panelCache,cached);
-      }catch(e){}
-      try{
-        // Load bookmarks
-        const bm=JSON.parse(localStorage.getItem("chronos-bookmarks") || "null");
-        if(bm && typeof bm === "object") setBookmarks(bm);
-      }catch(e){}
-      try{
-        // Load custom tags
-        const tags=JSON.parse(localStorage.getItem("chronos-tags") || "null");
-        if(Array.isArray(tags)) setCustomTags(tags);
-      }catch(e){}
-    })();
-  },[]);
+  main:{display:"flex",flexDirection:"column",minWidth:0,padding:18,gap:14,background:"#efede7"},
+  mainHeader:{
+    display:"flex",
+    alignItems:"center",
+    justifyContent:"space-between",
+    gap:18,
+    flexShrink:0
+  },
+  eyebrow:{fontSize:11,letterSpacing:".16em",textTransform:"uppercase",color:"rgba(23,20,18,.45)",marginBottom:5},
+  pageTitle:{fontFamily:"Georgia,serif",fontSize:"clamp(30px, 4vw, 54px)",lineHeight:1.02,fontWeight:600,margin:0,color:INK,letterSpacing:0,maxWidth:760},
+  pageSubtitle:{fontSize:14,lineHeight:1.55,color:MUTED,margin:"10px 0 0",maxWidth:620},
+  headerActions:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"},
+  primaryAction:{
+    height:36,
+    padding:"0 14px",
+    borderRadius:7,
+    border:"1px solid rgba(185,130,47,.42)",
+    background:"#fff7e8",
+    color:"#7a4b12",
+    cursor:"pointer",
+    fontFamily:"inherit",
+    fontSize:12,
+    fontWeight:600
+  },
+  secondaryAction:{
+    height:36,
+    padding:"0 12px",
+    borderRadius:7,
+    border:`1px solid ${LINE}`,
+    background:PANEL,
+    color:INK,
+    cursor:"pointer",
+    fontFamily:"inherit",
+    fontSize:12
+  },
+  timelineCard:{
+    position:"relative",
+    display:"flex",
+    flexDirection:"column",
+    minHeight:0,
+    flex:1,
+    overflow:"hidden",
+    borderRadius:8,
+    border:`1px solid ${LINE}`,
+    background:PANEL,
+    boxShadow:"0 16px 50px rgba(23,20,18,.08)"
+  },
+  timelineToolbar:{
+    height:54,
+    display:"flex",
+    alignItems:"center",
+    justifyContent:"space-between",
+    gap:16,
+    padding:"0 16px",
+    borderBottom:`1px solid ${LINE}`,
+    background:"#fffdf8",
+    flexShrink:0
+  },
+  timelineMeta:{display:"flex",alignItems:"baseline",gap:9,minWidth:0},
+  metaLabel:{fontSize:10,letterSpacing:".14em",textTransform:"uppercase",color:"rgba(23,20,18,.4)"},
+  metaValue:{fontSize:13,color:INK},
+  toolbarHint:{fontSize:11,color:MUTED,lineHeight:1.45},
 
-  const saveCache=useCallback(async()=>{
-    try{ localStorage.setItem("chronos-cache",JSON.stringify(S.current.panelCache)); }catch(e){}
-  },[]);
+  exploreGrid:{
+    display:"grid",
+    gridTemplateColumns:"repeat(6, minmax(132px, 1fr))",
+    gap:10,
+    flexShrink:0
+  },
+  exploreCard:(card)=>({
+    minHeight:118,
+    display:"flex",
+    flexDirection:"column",
+    alignItems:"flex-start",
+    justifyContent:"space-between",
+    gap:12,
+    padding:14,
+    borderRadius:18,
+    border:`1px solid ${card.color}26`,
+    background:`linear-gradient(180deg, ${card.bg}, #ffffff)`,
+    boxShadow:"0 10px 24px rgba(23,20,18,.06)",
+    cursor:"pointer",
+    fontFamily:"inherit",
+    textAlign:"left",
+    transition:"transform .16s ease, box-shadow .16s ease"
+  }),
+  exploreIcon:(color)=>({
+    width:34,
+    height:34,
+    borderRadius:14,
+    display:"flex",
+    alignItems:"center",
+    justifyContent:"center",
+    background:color,
+    color:"#fff",
+    fontFamily:"Georgia,serif",
+    fontSize:20,
+    fontWeight:700,
+    boxShadow:`0 8px 18px ${color}40`
+  }),
+  exploreContent:{display:"flex",flexDirection:"column",gap:3,minWidth:0},
+  exploreKicker:{fontSize:10,letterSpacing:".12em",textTransform:"uppercase",color:"rgba(23,20,18,.46)",fontWeight:600},
+  exploreTitle:{fontFamily:"Georgia,serif",fontSize:21,lineHeight:1.08,color:INK},
+  exploreText:{fontSize:11,lineHeight:1.45,color:MUTED},
 
-  const saveBookmarks=useCallback(async(bm)=>{
-    try{ localStorage.setItem("chronos-bookmarks",JSON.stringify(bm)); }catch(e){}
-  },[]);
+  wrap:{flex:1,position:"relative",overflow:"hidden",cursor:"grab",minHeight:360,background:"#faf7f2"},
+  cnv:{position:"absolute",top:0,left:0,width:"100%",height:"100%"},
+  zoomBtns:{position:"absolute",right:14,top:14,display:"flex",gap:6,zIndex:20},
+  zoomBtn:{
+    width:36,
+    height:36,
+    borderRadius:7,
+    background:PANEL,
+    border:`1px solid ${LINE}`,
+    cursor:"pointer",
+    display:"flex",
+    alignItems:"center",
+    justifyContent:"center",
+    fontSize:18,
+    fontWeight:500,
+    color:INK,
+    boxShadow:"0 4px 14px rgba(23,20,18,.10)"
+  },
+  mini:{position:"absolute",bottom:14,right:14,width:176,height:34,background:"#eee8dc",border:`1px solid ${LINE}`,borderRadius:5,overflow:"hidden",zIndex:20},
+  statusbar:{height:36,display:"flex",alignItems:"center",gap:14,flexShrink:0,color:MUTED},
+  statusEpoch:{fontFamily:"Georgia,serif",fontSize:13,fontStyle:"italic",color:INK,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+  aiBadge:(v)=>({display:"flex",alignItems:"center",gap:6,padding:"4px 9px",borderRadius:999,background:"#fff7e8",border:"1px solid rgba(185,130,47,.24)",fontSize:10,letterSpacing:".06em",opacity:v?1:0,transition:"opacity .3s"}),
+  aiDot:{width:6,height:6,borderRadius:"50%",background:GOLD,animation:"dp 1.2s ease-in-out infinite"},
+  statusR:{fontSize:11,color:MUTED},
 
-  const saveTags=useCallback(async(tags)=>{
-    try{ localStorage.setItem("chronos-tags",JSON.stringify(tags)); }catch(e){}
-  },[]);
+  searchWrap:{position:"relative",flexShrink:0},
+  searchInput:{
+    height:42,
+    width:"100%",
+    borderRadius:8,
+    border:`1px solid ${LINE}`,
+    background:PANEL,
+    padding:"0 38px 0 34px",
+    fontSize:13,
+    fontFamily:"inherit",
+    color:INK,
+    outline:"none",
+    boxShadow:"0 1px 0 rgba(23,20,18,.04)"
+  },
+  searchIcon:{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"rgba(23,20,18,.38)",pointerEvents:"none"},
+  searchClear:{position:"absolute",right:11,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"rgba(23,20,18,.45)",cursor:"pointer",background:"none",border:"none",padding:0,lineHeight:1},
+  searchDropdown:{position:"absolute",top:"calc(100% + 8px)",left:0,right:0,background:PANEL,border:`1px solid ${LINE}`,borderRadius:8,boxShadow:"0 18px 42px rgba(23,20,18,.18)",zIndex:100,overflow:"hidden"},
+  searchHeader:{padding:"9px 12px 7px",borderBottom:`1px solid ${LINE}`,display:"flex",alignItems:"center",gap:6},
+  searchHeaderTxt:{fontSize:10,color:"rgba(23,20,18,.45)",letterSpacing:".08em",textTransform:"uppercase",flex:1},
+  searchSpinner:{width:11,height:11,borderRadius:"50%",border:"1.5px solid rgba(23,20,18,.15)",borderTop:`1.5px solid ${GOLD}`,animation:"spin .7s linear infinite"},
+  searchItem:{display:"flex",alignItems:"flex-start",gap:10,padding:"11px 12px",cursor:"pointer",borderBottom:`1px solid ${LINE}`,transition:"background .12s"},
+  searchDot:(c)=>({width:8,height:8,borderRadius:"50%",background:c,flexShrink:0,marginTop:5}),
+  searchItemInfo:{flex:1,minWidth:0},
+  searchItemTitle:{display:"block",fontSize:15,fontWeight:500,color:INK,marginBottom:3,fontFamily:"Georgia,serif"},
+  searchItemDate:{display:"block",fontSize:11,color:GOLD,marginBottom:3},
+  searchItemDesc:{fontSize:12,color:MUTED,lineHeight:1.55,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"},
+  searchItemRel:{display:"block",fontSize:10,color:"rgba(23,20,18,.44)",fontStyle:"italic",marginTop:3},
+  searchItemNav:{fontSize:12,color:"rgba(23,20,18,.32)",flexShrink:0,marginTop:3},
+  searchEmpty:{padding:"20px 12px",textAlign:"center",fontSize:12,color:MUTED},
+  searchError:{padding:"10px 12px",fontSize:12,lineHeight:1.45,color:"#9f2f24",background:"rgba(180,40,30,.08)",borderBottom:"1px solid rgba(180,40,30,.12)"},
+  searchAiBadge:{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 7px",borderRadius:999,background:"rgba(185,130,47,.12)",border:"1px solid rgba(185,130,47,.22)",fontSize:10,color:GOLD,letterSpacing:".05em"},
 
-  useEffect(()=>{
-    const onResize=()=>setIsMobile(window.innerWidth<760);
-    window.addEventListener("resize",onResize);
-    return()=>window.removeEventListener("resize",onResize);
-  },[]);
+  tt:(t)=>({position:"absolute",left:t.x,top:t.y,pointerEvents:"none",zIndex:50,background:"#171412",color:SURFACE,borderRadius:8,padding:"9px 12px",maxWidth:230,boxShadow:"0 10px 28px rgba(0,0,0,.28)"}),
+  ttDate:{fontSize:9,color:"#e6b76b",letterSpacing:".08em",marginBottom:4},
+  ttTitle:{fontFamily:"Georgia,serif",fontSize:15,lineHeight:1.3},
+  ttHint:{fontSize:9,color:"rgba(251,250,247,.48)",marginTop:5},
 
-  const toggleBookmark=useCallback((ev,tag)=>{
-    setBookmarks(prev=>{
-      const next={...prev};
-      if(next[ev.id]?.tag===tag){
-        delete next[ev.id]; // remove if same tag clicked again
-      } else {
-        next[ev.id]={tag,title:ev.title,date_label:ev.date_label,cat:ev.cat,yearsAgo:ev.yearsAgo,desc:ev.desc||""};
-      }
-      saveBookmarks(next);
-      return next;
-    });
-    setUi(u=>({...u,showBookmarkMenu:false}));
-  },[saveBookmarks]);
+  legend:(o)=>({position:"absolute",left:0,top:0,bottom:0,width:"min(280px, 88vw)",background:PANEL,borderRight:`1px solid ${LINE}`,transform:o?"translateX(0)":"translateX(-100%)",transition:"transform .3s cubic-bezier(.16,1,.3,1)",overflowY:"auto",padding:18,zIndex:35,boxShadow:"8px 0 26px rgba(23,20,18,.10)"}),
+  legHead:{fontSize:10,letterSpacing:".14em",textTransform:"uppercase",color:"rgba(23,20,18,.42)",fontWeight:600,marginBottom:9},
+  legItem:{display:"flex",alignItems:"center",gap:8,marginBottom:8},
+  legDot:(c)=>({width:9,height:9,borderRadius:"50%",background:c,flexShrink:0}),
+  legBar:(c)=>({width:14,height:6,borderRadius:2,background:c,flexShrink:0}),
+  legLbl:{fontSize:12,color:INK},
 
-  const removeBookmark=useCallback((evId)=>{
-    setBookmarks(prev=>{
-      const next={...prev};
-      delete next[evId];
-      saveBookmarks(next);
-      return next;
-    });
-  },[saveBookmarks]);
-
-  const addCustomTag=useCallback((tag)=>{
-    if(!tag.trim())return;
-    setCustomTags(prev=>{
-      const next=[...prev,tag.trim()];
-      saveTags(next);
-      return next;
-    });
-    setNewTagInput(""); setAddingTag(false);
-  },[saveTags]);
-
-  const removeCustomTag=useCallback((tag)=>{
-    setCustomTags(prev=>{
-      const next=prev.filter(t=>t!==tag);
-      saveTags(next);
-      return next;
-    });
-    // Remove bookmarks using this tag
-    setBookmarks(prev=>{
-      const next=Object.fromEntries(Object.entries(prev).filter(([,v])=>v.tag!==tag));
-      saveBookmarks(next);
-      return next;
-    });
-  },[saveTags,saveBookmarks]);
-  const [ui,setUi]=useState({epochLabel:"Vue globale",range:"",aiVisible:false,aiLabel:"",legendOpen:false,panelOpen:false,panelCat:"",panelCatColor:"#555",panelDate:"",panelTitle:"",panelContent:null,panelError:null,tooltip:null,searchOpen:false,searchQuery:"",searchResults:[],searchLoading:false,searchDone:false,searchError:null,panelEventId:null,bookmarkTag:null,showBookmarkMenu:false,showBookmarksView:false});
-  const [bookmarks,setBookmarks]=useState({});       // {eventId: {tag, title, date_label, cat, yearsAgo}}
-  const [customTags,setCustomTags]=useState(["Favori","À revoir","Intéressant"]); // editable list
-  const [addingTag,setAddingTag]=useState(false);
-  const [newTagInput,setNewTagInput]=useState("");
-  const [isMobile,setIsMobile]=useState(()=>typeof window!=="undefined"&&window.innerWidth<760);
-
-  const redraw=useCallback(()=>{
-    const cnv=canvasRef.current,mcnv=miniRef.current,wrap=wrapRef.current;
-    if(!cnv||!wrap)return;
-    const nextW=wrap.offsetWidth,nextH=wrap.offsetHeight;
-    if(cnv.width!==nextW) cnv.width=nextW;
-    if(cnv.height!==nextH) cnv.height=nextH;
-    if(mcnv){
-      if(mcnv.width!==160) mcnv.width=160;
-      if(mcnv.height!==28) mcnv.height=28;
-    }
-    const s=S.current;
-    const r=drawAll(cnv,mcnv,{vs:s.vs,ve:s.ve,aiEvents:s.aiEvents,selectedId:s.selectedId,hoveredId:s.hoveredId});
-    s.placed=r.placed;s.lineY=r.LINE_Y;s.periodY=r.PERIOD_Y;s.periodH=r.PERIOD_H;s.treeTop=r.TREE_TOP;
-    const mid=makeCoord(s.vs,s.ve,cnv.width).toYa(cnv.width/2);
-    const ep=epochAt(mid);
-    setUi(u=>({...u,epochLabel:ep.label+"  ·  "+fmt(s.vs)+" → "+fmt(Math.max(s.ve,0.1)),range:`zoom ×${Math.pow(10,zoomLvl(s.vs,s.ve)).toFixed(0)}`}));
-  },[]);
-
-  const scheduleRedraw=useCallback(()=>{if(rafRef.current)cancelAnimationFrame(rafRef.current);rafRef.current=requestAnimationFrame(redraw);},[redraw]);
-
-  const navigateToEpoch=useCallback((ep)=>{
-    if(animRef.current)cancelAnimationFrame(animRef.current);
-    const s=S.current,targetVs=ep.from*1.05,targetVe=Math.max(ep.to*0.8,0.1);
-    const startVs=s.vs,startVe=s.ve,steps=28;let step=0;
-    const animate=()=>{step++;const t=step/steps,ease=t<0.5?2*t*t:-1+(4-2*t)*t;
-      const ls=L(startVs)+(L(targetVs)-L(startVs))*ease,le=L(startVe)+(L(targetVe)-L(startVe))*ease;
-      s.vs=Math.pow(10,ls);s.ve=Math.pow(10,le);scheduleRedraw();
-      if(step<steps)animRef.current=requestAnimationFrame(animate);};
-    animRef.current=requestAnimationFrame(animate);
-  },[scheduleRedraw]);
-
-  const fetchZone=useCallback(async(startYa,endYa)=>{
-    const s=S.current,key=`${L(startYa).toFixed(2)}_${L(Math.max(endYa,0.1)).toFixed(2)}`;
-    if(s.fetchedZones.has(key))return;
-    if(s.fetching){if(!s.fetchQueue.find(q=>q.key===key))s.fetchQueue.push({key,startYa,endYa});return;}
-    s.fetching=true;s.fetchedZones.add(key);
-    setUi(u=>({...u,aiVisible:true,aiLabel:`${fmt(startYa)} → ${fmt(Math.max(endYa,0.1))}`}));
-    try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":(window.__ANTHROPIC_KEY__||""),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-3-5-sonnet-20241022",max_tokens:900,messages:[{role:"user",content:buildPrompt(startYa,endYa)}]})});
-      if(!res.ok)throw new Error(res.status);
-      const data=await res.json();
-      const raw=(data.content||[]).find(b=>b.type==="text")?.text||"[]";
-      const match=raw.match(/\[[\s\S]*?\]/);if(!match)throw new Error("no array");
-      const evs=JSON.parse(match[0]);let added=0;
-      for(const ev of evs){
-        const ya=Number(ev.yearsAgo);if(!ev.title||isNaN(ya)||ya<0)continue;
-        if(s.aiEvents.find(e=>Math.abs(L(e.yearsAgo)-L(ya))<0.02&&e.title===ev.title))continue;
-        s.aiEvents.push({id:`ai_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,yearsAgo:ya,title:ev.title,date_label:ev.date_label||fmt(ya),desc:ev.desc||"",cat:ev.cat||"histoire",importance:3,minZoom:0});
-        added++;
-      }
-      if(added>0)scheduleRedraw();
-    }catch(e){console.warn("AI:",e);}
-    finally{
-      s.fetching=false;setTimeout(()=>setUi(u=>({...u,aiVisible:false})),700);
-      if(s.fetchQueue.length>0){const n=s.fetchQueue.shift();if(!s.fetchedZones.has(n.key))setTimeout(()=>fetchZone(n.startYa,n.endYa),350);}
-    }
-  },[scheduleRedraw]);
-
-  const triggerFetch=useCallback(()=>{
-    clearTimeout(fetchDebRef.current);
-    fetchDebRef.current=setTimeout(()=>{
-      const s=S.current,ls=L(s.vs),le=L(Math.max(s.ve,0.1));
-      fetchZone(s.vs,Math.max(s.ve,0.1));
-      if(ls-le>0.7){const mid=Math.pow(10,(ls+le)/2);fetchZone(s.vs,mid);fetchZone(mid,Math.max(s.ve,0.1));}
-    },800);
-  },[fetchZone]);
-
-  const fetchRich=useCallback(async(ev)=>{
-    const s=S.current;
-    // 1. Pre-written static content — instant, no API
-    if(STATIC_CONTENT[ev.id]){setUi(u=>({...u,panelContent:STATIC_CONTENT[ev.id],panelEventId:ev.id}));return;}
-    // 2. Already cached (from storage or previous API call)
-    if(s.panelCache[ev.id]){setUi(u=>({...u,panelContent:s.panelCache[ev.id],panelEventId:ev.id}));return;}
-    // 3. Generate via API then persist
-    setUi(u=>({...u,panelContent:"loading",panelError:null,panelEventId:ev.id}));
-    try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":(window.__ANTHROPIC_KEY__||""),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-3-5-sonnet-20241022",max_tokens:900,messages:[{role:"user",content:`Rédige une fiche encyclopédique engageante sur :
-Événement : ${ev.title}
-Date : ${ev.date_label}
-Contexte : ${ev.desc}
-En HTML simple (<p>,<h3>,<strong> uniquement). Sections : intro immersive (1§), <h3>Contexte</h3>(1§), <h3>Ce qui s'est passé</h3>(1§), <h3>Héritage</h3>(1§), <h3>Le saviez-vous ?</h3>(1§). ~260 mots. HTML direct, sans balises html/body.`}]})});
-      if(!res.ok)throw new Error(`Erreur API ${res.status}`);
-      const data=await res.json();
-      const html=(data.content||[]).find(b=>b.type==="text")?.text||"<p>Indisponible.</p>";
-      s.panelCache[ev.id]=html;
-      setUi(u=>({...u,panelContent:html,panelError:null,panelEventId:ev.id}));
-      saveCache(); // persist to storage
-    }catch(e){setUi(u=>({...u,panelContent:"<p>La fiche détaillée n'a pas pu être chargée pour le moment.</p>",panelError:"Connexion à l'IA indisponible. Vous pouvez réessayer en rouvrant cette fiche.",panelEventId:ev.id}));}
-  },[saveCache]);
-
-  const openPeriodPanel=useCallback((item)=>{
-    S.current.selectedId=null; scheduleRedraw();
-    const desc=PERIOD_DESCRIPTIONS[item.label]||{summary:"",highlights:[]};
-    const html=`<p style="font-family:Georgia,serif;font-size:14px;line-height:1.8;color:#12100e;margin-bottom:12px">${desc.summary}</p>`+
-      (desc.highlights.length?`<h3 style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:rgba(18,16,14,.4);margin:14px 0 8px">Points clés</h3><ul style="list-style:none;padding:0;margin:0">${desc.highlights.map(h=>`<li style="font-family:Georgia,serif;font-size:13px;color:#12100e;padding:5px 0;border-bottom:1px solid rgba(18,16,14,.06);display:flex;align-items:flex-start;gap:8px"><span style="color:#c8963c;flex-shrink:0">◆</span>${h}</li>`).join("")}</ul>`:"");
-    setUi(u=>({...u,panelOpen:true,panelCat:item.from>1e9?"ÈRE":"PÉRIODE",
-      panelCatColor:item.stripe||item.color||"#c8963c",
-      panelDate:fmt(item.from)+" → "+(item.to>0?fmt(item.to):"aujourd'hui"),
-      panelTitle:item.label,panelContent:html,panelError:null,tooltip:null,panelEventId:"period_"+item.label,showBookmarkMenu:false}));
-    S.current._currentPanelEv={id:"period_"+item.label,title:item.label,date_label:fmt(item.from),yearsAgo:item.from,cat:"geologique"};
-  },[scheduleRedraw]);
-
-  const openPanel=useCallback((ev)=>{
-    S.current._currentPanelEv=ev;
-    scheduleRedraw();
-    setUi(u=>({...u,panelOpen:true,panelCat:ev.cat.toUpperCase(),panelCatColor:cc(ev.cat),panelDate:ev.date_label,panelTitle:ev.title,panelContent:"loading",panelError:null,tooltip:null,panelEventId:ev.id,showBookmarkMenu:false}));
-    fetchRich(ev);
-  },[scheduleRedraw,fetchRich]);
-
-  const closePanel=useCallback(()=>{S.current.selectedId=null;scheduleRedraw();setUi(u=>({...u,panelOpen:false}));},[scheduleRedraw]);
-
-  const searchDebRef=useRef(null);
-
-  // Universal search: local match + AI search across all of human history
-  const searchWithAI=useCallback(async(query)=>{
-    if(!query.trim()){setUi(u=>({...u,searchResults:[],searchDone:false,searchLoading:false,searchError:null}));return;}
-
-    // 1. Local match
-    const q=query.toLowerCase();
-    const s=S.current;
-    const local=[...ALL_EVENTS,...s.aiEvents].filter(ev=>
-      ev.title.toLowerCase().includes(q)||
-      ev.desc.toLowerCase().includes(q)||
-      ev.date_label.toLowerCase().includes(q)||
-      ev.cat.toLowerCase().includes(q)
-    ).slice(0,4);
-    setUi(u=>({...u,searchResults:local,searchLoading:true,searchDone:false,searchError:null}));
-
-    // 2. Universal AI search — any event in all of history
-    try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":(window.__ANTHROPIC_KEY__||""),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-3-5-sonnet-20241022",max_tokens:1000,
-          messages:[{role:"user",content:`Tu es un historien et scientifique expert de toute l'histoire de l'univers, de la Terre, de la vie et de l'humanité.
-
-L'utilisateur recherche : "${query}"
-
-Trouve les événements historiques, scientifiques, biologiques ou cosmiques les plus pertinents correspondant à cette recherche. Tu peux inclure :
-- Des événements très précis et peu connus (batailles, inventions, naissances, découvertes, traités...)
-- Des personnages historiques (leur naissance ou mort comme événement)
-- Des phénomènes naturels, géologiques, biologiques
-- N'importe quelle période de l'histoire, de n'importe quel pays ou région du monde
-- Des événements aussi petits ou grands que nécessaire pour répondre à la requête
-
-Réponds UNIQUEMENT par un tableau JSON valide (sans markdown). Max 6 résultats, du plus pertinent au moins pertinent :
-[{"yearsAgo":number,"title":"titre court max 6 mots","date_label":"date précise lisible","desc":"1-2 phrases de description factuelle","cat":"cosmique|geologique|biologique|prehistoire|histoire","relevance":"lien avec la recherche en 4 mots max"}]
-
-IMPORTANT : yearsAgo doit être un nombre positif représentant combien d'années avant 2025. Ex: 1804 ap.J.-C. → yearsAgo=221, 500 av.J.-C. → yearsAgo=2525.
-Si aucun événement réel ne correspond, retourne [].`}]})});
-      if(!res.ok)throw new Error(res.status);
-      const data=await res.json();
-      const raw=(data.content||[]).find(b=>b.type==="text")?.text||"[]";
-      const match=raw.match(/\[[\s\S]*?\]/);
-      if(!match)throw new Error("no array");
-      const aiResults=JSON.parse(match[0]);
-      const merged=[...local];
-      for(const r of aiResults){
-        const ya=Number(r.yearsAgo);
-        if(isNaN(ya)||ya<0)continue;
-        const dup=merged.find(e=>e.title.toLowerCase()===r.title.toLowerCase());
-        if(!dup){
-          merged.push({
-            id:`srch_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
-            yearsAgo:ya,title:r.title,date_label:r.date_label||"",
-            desc:r.desc||"",cat:r.cat||"histoire",
-            relevance:r.relevance,importance:2,minZoom:0,fromSearch:true
-          });
-        }
-      }
-      setUi(u=>({...u,searchResults:merged.slice(0,8),searchLoading:false,searchDone:true,searchError:null}));
-    }catch(e){
-      setUi(u=>({...u,searchLoading:false,searchDone:true,searchError:"La recherche IA est indisponible. Les résultats locaux restent affichés."}));
-    }
-  },[]);
-
-  const handleSearch=useCallback((query)=>{
-    setUi(u=>({...u,searchQuery:query,searchResults:[],searchDone:false,searchError:null}));
-    clearTimeout(searchDebRef.current);
-    if(!query.trim()){setUi(u=>({...u,searchLoading:false,searchError:null}));return;}
-    searchDebRef.current=setTimeout(()=>searchWithAI(query),500);
-  },[searchWithAI]);
-
-  // Navigate to a search result: zoom in on the event, add it if not present, open panel
-  const goToResult=useCallback((ev)=>{
-    // Add to aiEvents if not already there
-    const s=S.current;
-    if(!ALL_EVENTS.find(e=>e.id===ev.id)&&!s.aiEvents.find(e=>e.id===ev.id)){
-      s.aiEvents.push({...ev,importance:ev.importance||2,minZoom:0});
-    }
-    // Animate to event: zoom in to ~50× around the event's date
-    const targetYa=ev.yearsAgo;
-    const span=Math.max(targetYa*0.15,500); // show ±15% of event date, min 500 years
-    const targetVs=targetYa+span, targetVe=Math.max(targetYa-span,0.1);
-    if(animRef.current)cancelAnimationFrame(animRef.current);
-    const startVs=s.vs,startVe=s.ve,steps=30;let step=0;
-    const animate=()=>{
-      step++;const t=step/steps,ease=t<0.5?2*t*t:-1+(4-2*t)*t;
-      const ls=L(startVs)+(L(targetVs)-L(startVs))*ease,le=L(startVe)+(L(targetVe)-L(startVe))*ease;
-      s.vs=Math.pow(10,ls);s.ve=Math.pow(10,le);
-      scheduleRedraw();
-      if(step<steps)animRef.current=requestAnimationFrame(animate);
-      else{
-        // Open panel after animation
-        setUi(u=>({...u,searchOpen:false,searchQuery:"",searchResults:[],searchDone:false}));
-        openPanel(ev);
-        triggerFetch();
-      }
-    };
-    animRef.current=requestAnimationFrame(animate);
-  },[scheduleRedraw,openPanel,triggerFetch]);
-
-  const zoomAround=useCallback((pivotYa,factor)=>{
-    const s=S.current;
-    const ns=pivotYa+(s.vs-pivotYa)*factor,ne=pivotYa+(s.ve-pivotYa)*factor;
-    if(ns>UA*1.1||ne<0.05)return;if(L(ns)-L(Math.max(ne,0.1))<0.03)return;
-    s.vs=Math.min(ns,UA*1.1);s.ve=Math.max(ne,0.05);
-  },[]);
-
-  const resetView=useCallback(()=>{
-    S.current.vs=UA*1.04;
-    S.current.ve=20;
-    scheduleRedraw();
-    triggerFetch();
-  },[scheduleRedraw,triggerFetch]);
-
-  const zoomFromCenter=useCallback((factor)=>{
-    const s=S.current,W=canvasRef.current?.width||800;
-    const center=makeCoord(s.vs,s.ve,W).toYa(W/2);
-    zoomAround(center,factor);
-    scheduleRedraw();
-    triggerFetch();
-  },[scheduleRedraw,triggerFetch,zoomAround]);
-
-  useEffect(()=>{
-    const wrap=wrapRef.current,cnv=canvasRef.current;if(!wrap||!cnv)return;
-    const onWheel=(e)=>{e.preventDefault();const rect=cnv.getBoundingClientRect();zoomAround(makeCoord(S.current.vs,S.current.ve,cnv.width).toYa(e.clientX-rect.left),e.deltaY>0?1.13:.88);scheduleRedraw();triggerFetch();};
-    let dragging=false;
-    const onMD=(e)=>{dragging=true;wrap.style.cursor="grabbing";};
-    const onMU=()=>{dragging=false;wrap.style.cursor="grab";};
-    const onMM=(e)=>{
-      const rect=cnv.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top;
-      if(dragging){
-        const s=S.current,lr=L(s.vs)-L(s.ve),sh=-(e.movementX/cnv.width)*lr,ls=L(s.vs)+sh,le=L(s.ve)+sh;
-        if(ls>Math.log10(UA*1.1)||le<0)return;s.vs=Math.pow(10,ls);s.ve=Math.pow(10,le);scheduleRedraw();triggerFetch();return;
-      }
-      const s=S.current;let found=null;
-      for(const p of s.placed)if(Math.abs(p.x-mx)<16&&Math.abs(s.lineY-my)<80){found=p.ev;break;}
-      const nid=found?found.id:null;
-      if(nid!==s.hoveredId){
-        s.hoveredId=nid;wrap.style.cursor=found?"pointer":"grab";scheduleRedraw();
-        if(found){let tx=mx+16,ty=my-68;if(tx+220>cnv.width)tx=mx-226;if(ty<10)ty=my+20;setUi(u=>({...u,tooltip:{x:tx,y:ty,date:found.date_label,title:found.title}}));}
-        else setUi(u=>({...u,tooltip:null}));
-      }
-    };
-    const onClick=(e)=>{
-      const rect=cnv.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top,s=S.current;
-      // 1. Event dots
-      for(const p of s.placed)if(Math.abs(p.x-mx)<16&&Math.abs(s.lineY-my)<80){openPanel(p.ev);return;}
-      // 2. Period band click
-      if(s.periodY&&my>=s.periodY&&my<=s.periodY+s.periodH){
-        const coord=makeCoord(s.vs,s.ve,cnv.width);
-        const ya=coord.toYa(mx);
-        const per=PERIODS.find(p=>ya<=p.from&&ya>=p.to);
-        if(per){openPeriodPanel(per);return;}
-      }
-      // 3. Epoch band click (above period band)
-      if(s.periodY&&my<s.periodY&&my>56){
-        const coord=makeCoord(s.vs,s.ve,cnv.width);
-        const ya=coord.toYa(mx);
-        const ep=EPOCHS.find(p=>ya<=p.from&&ya>=p.to);
-        if(ep){openPeriodPanel(ep);return;}
-      }
-      closePanel();
-    };
-    let lt=null,ld=null;
-    const onTS=(e)=>{if(e.touches.length===1)lt=e.touches[0].clientX;else if(e.touches.length===2)ld=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);};
-    const onTM=(e)=>{
-      e.preventDefault();const rect=cnv.getBoundingClientRect(),s=S.current;
-      if(e.touches.length===1&&lt!==null){const dx=e.touches[0].clientX-lt;lt=e.touches[0].clientX;const lr=L(s.vs)-L(s.ve),sh=-(dx/cnv.width)*lr,ls=L(s.vs)+sh,le=L(s.ve)+sh;if(ls>Math.log10(UA*1.1)||le<0)return;s.vs=Math.pow(10,ls);s.ve=Math.pow(10,le);scheduleRedraw();triggerFetch();}
-      else if(e.touches.length===2&&ld!==null){const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);const mx=(e.touches[0].clientX+e.touches[1].clientX)/2-rect.left;zoomAround(makeCoord(s.vs,s.ve,cnv.width).toYa(mx),ld/d);ld=d;scheduleRedraw();triggerFetch();}
-    };
-    const onTE=()=>{lt=null;ld=null;};
-    const onResize=()=>scheduleRedraw();
-    cnv.addEventListener("wheel",onWheel,{passive:false});cnv.addEventListener("mousedown",onMD);cnv.addEventListener("click",onClick);
-    cnv.addEventListener("touchstart",onTS,{passive:false});cnv.addEventListener("touchmove",onTM,{passive:false});cnv.addEventListener("touchend",onTE);
-    window.addEventListener("mousemove",onMM);window.addEventListener("mouseup",onMU);window.addEventListener("resize",onResize);
-    scheduleRedraw();triggerFetch();
-    return()=>{cnv.removeEventListener("wheel",onWheel);cnv.removeEventListener("mousedown",onMD);cnv.removeEventListener("click",onClick);cnv.removeEventListener("touchstart",onTS);cnv.removeEventListener("touchmove",onTM);cnv.removeEventListener("touchend",onTE);window.removeEventListener("mousemove",onMM);window.removeEventListener("mouseup",onMU);window.removeEventListener("resize",onResize);};
-  },[scheduleRedraw,triggerFetch,zoomAround,openPanel,openPeriodPanel,closePanel]);
-
-  return (
-    <div style={css.app}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap');@keyframes dp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.5)}}@keyframes bw{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}@keyframes spin{to{transform:rotate(360deg)}}::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#d8d0c3;border-radius:999px}.srch-item:hover{background:#f5f0e8!important}.srch-item{font:inherit;text-align:left;border:0;background:transparent;width:100%}button:hover{transform:translateY(-1px)}button:active{transform:translateY(0)}@media (max-width:1120px){.chronos-shell{grid-template-columns:280px minmax(0,1fr)!important}}@media (max-width:860px){.chronos-shell{display:flex!important;flex-direction:column!important;height:auto!important;min-height:100vh}.chronos-sidebar{position:relative!important;max-height:none!important;border-right:0!important;border-bottom:1px solid rgba(23,20,18,.10)!important}.chronos-main{min-height:calc(100vh - 360px);padding:14px!important}.chronos-mini{display:none}.chronos-header{align-items:flex-start!important;flex-direction:column!important}.chronos-explore{grid-template-columns:repeat(2,minmax(0,1fr))!important}.chronos-toolbar-hint{display:none}}@media (max-width:520px){.chronos-explore{grid-template-columns:1fr!important}.chronos-actions{width:100%}.chronos-actions button{flex:1}.chronos-page-title{font-size:34px!important}}`}</style>
-
-      <div className="chronos-shell" style={css.shell}>
-        <Topbar
-          ui={ui}
-          setUi={setUi}
-          handleSearch={handleSearch}
-          goToResult={goToResult}
-          navigateToEpoch={navigateToEpoch}
-          resetView={resetView}
-          isMobile={isMobile}
-        />
-
-        <main className="chronos-main" style={css.main}>
-          <header className="chronos-header" style={css.mainHeader}>
-            <div>
-              <div style={css.eyebrow}>Chronos Atlas</div>
-              <h1 className="chronos-page-title" style={css.pageTitle}>Explore toute l'histoire, simplement.</h1>
-              <p style={css.pageSubtitle}>{ui.epochLabel}</p>
-            </div>
-            <div className="chronos-actions" style={css.headerActions}>
-              <button type="button" style={css.primaryAction} onClick={resetView}>Vue globale</button>
-              <button type="button" style={css.secondaryAction} onClick={()=>setUi(u=>({...u,legendOpen:!u.legendOpen,showBookmarksView:false}))}>Légende</button>
-              <button type="button" style={css.secondaryAction} onClick={()=>setUi(u=>({...u,showBookmarksView:!u.showBookmarksView,legendOpen:false}))}>Signets</button>
-            </div>
-          </header>
-
-          <ExploreCards navigateToEpoch={navigateToEpoch}/>
-
-          <section style={css.timelineCard}>
-            <div style={css.timelineToolbar}>
-              <div style={css.timelineMeta}>
-                <span style={css.metaLabel}>Navigation</span>
-                <span style={css.metaValue}>{ui.range || "zoom ×1"}</span>
-              </div>
-              <div className="chronos-toolbar-hint" style={css.toolbarHint}>Molette pour zoomer, glisser pour se déplacer, clic pour ouvrir une fiche.</div>
-            </div>
-
-            <div ref={wrapRef} style={css.wrap}>
-              <canvas ref={canvasRef} style={css.cnv} aria-label="Frise chronologique interactive"/>
-              <Legend open={ui.legendOpen}/>
-              <ZoomControls onZoomIn={()=>zoomFromCenter(.72)} onZoomOut={()=>zoomFromCenter(1.38)}/>
-              <div className="chronos-mini" style={css.mini}><canvas ref={miniRef} aria-hidden="true"/></div>
-              <TimelineTooltip tooltip={ui.tooltip}/>
-              <BookmarksPanel
-                open={ui.showBookmarksView}
-                bookmarks={bookmarks}
-                customTags={customTags}
-                addingTag={addingTag}
-                newTagInput={newTagInput}
-                setUi={setUi}
-                setAddingTag={setAddingTag}
-                setNewTagInput={setNewTagInput}
-                addCustomTag={addCustomTag}
-                removeCustomTag={removeCustomTag}
-                removeBookmark={removeBookmark}
-                goToResult={goToResult}
-                stateRef={S}
-              />
-              <EventPanel
-                ui={ui}
-                bookmarks={bookmarks}
-                customTags={customTags}
-                addingTag={addingTag}
-                newTagInput={newTagInput}
-                setAddingTag={setAddingTag}
-                setNewTagInput={setNewTagInput}
-                addCustomTag={addCustomTag}
-                toggleBookmark={toggleBookmark}
-                closePanel={closePanel}
-                stateRef={S}
-              />
-            </div>
-          </section>
-
-          <StatusBar ui={ui}/>
-        </main>
-      </div>
-    </div>
-  );
-}
+  panel:(o)=>({position:"absolute",right:0,top:0,bottom:0,width:"min(520px, 94vw)",background:PANEL,borderLeft:`1px solid ${LINE}`,transform:o?"translateX(0)":"translateX(100%)",transition:"transform .34s cubic-bezier(.16,1,.3,1)",display:"flex",flexDirection:"column",zIndex:40,boxShadow:"-16px 0 42px rgba(23,20,18,.14)"}),
+  panelStripe:(c)=>({height:5,flexShrink:0,background:c}),
+  panelHdr:{padding:"24px 28px 18px",borderBottom:`1px solid ${LINE}`,flexShrink:0,position:"relative"},
+  panelClose:{position:"absolute",top:14,right:16,width:30,height:30,borderRadius:"50%",background:"#f3f0ea",border:`1px solid ${LINE}`,cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",color:INK},
+  panelCat:{fontSize:10,letterSpacing:".16em",textTransform:"uppercase",fontWeight:600,marginBottom:5,opacity:.76},
+  panelDate:{fontSize:13,color:GOLD,marginBottom:9},
+  panelTitle:{fontFamily:"Georgia,serif",fontSize:31,lineHeight:1.15,color:INK,paddingRight:32},
+  panelBody:{flex:1,overflowY:"auto",padding:"24px 30px",scrollbarWidth:"thin",scrollbarColor:"#d8d0c3 transparent"},
+  panelContent:{fontFamily:"Georgia,serif",fontSize:18,lineHeight:1.78,color:INK},
+  panelError:{padding:"11px 28px",fontSize:12,lineHeight:1.5,color:"#9f2f24",background:"rgba(180,40,30,.08)",borderBottom:"1px solid rgba(180,40,30,.12)"},
+  loading:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:180,gap:12},
+  bars:{display:"flex",gap:4,alignItems:"flex-end",height:22},
+  barsLbl:{fontSize:10,letterSpacing:".12em",color:"rgba(23,20,18,.45)",textTransform:"uppercase"},
+  bmBar:{display:"flex",alignItems:"center",gap:8,padding:"11px 28px 9px",borderBottom:`1px solid ${LINE}`,flexShrink:0,flexWrap:"wrap"},
+  bmBtn:(active,col)=>({display:"inline-flex",alignItems:"center",gap:4,padding:"5px 10px",borderRadius:999,fontSize:11,letterSpacing:".03em",fontWeight:600,cursor:"pointer",border:`1px solid ${col||"rgba(23,20,18,.2)"}`,background:active?`${col||GOLD}18`:"transparent",color:active?(col||GOLD):MUTED,transition:"all .15s",whiteSpace:"nowrap",fontFamily:"inherit"}),
+  bmViewPanel:{position:"absolute",left:0,top:0,bottom:0,width:"min(360px, 92vw)",background:PANEL,borderRight:`1px solid ${LINE}`,transform:"translateX(0)",display:"flex",flexDirection:"column",zIndex:38,boxShadow:"12px 0 34px rgba(23,20,18,.12)"},
+  bmViewItem:{display:"flex",alignItems:"flex-start",gap:9,padding:"11px 14px",borderBottom:`1px solid ${LINE}`,cursor:"pointer",transition:"background .12s"},
+  bmTag:(col)=>({display:"inline-flex",alignItems:"center",padding:"2px 7px",borderRadius:999,fontSize:10,letterSpacing:".04em",border:`1px solid ${col}44`,background:`${col}12`,color:col,flexShrink:0,marginTop:1}),
+  inlineIconButton:{cursor:"pointer",color:"rgba(23,20,18,.38)",fontSize:12,lineHeight:1,background:"transparent",border:0,padding:0},
+  inlineConfirmButton:{cursor:"pointer",fontSize:12,color:"#0a7848",background:"transparent",border:0,padding:"2px 3px"},
+  addTagButton:{padding:"4px 9px",borderRadius:999,border:`1px dashed ${LINE}`,fontSize:11,color:MUTED,cursor:"pointer",background:"transparent",fontFamily:"inherit"}
+};
